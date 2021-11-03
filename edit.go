@@ -2,11 +2,15 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/gdamore/tcell/v2/encoding"
+	"github.com/mattn/go-runewidth"
 )
 
 type CursorStruct struct {
@@ -23,12 +27,45 @@ type ScreenStruct struct {
 	infoStyle    tcell.Style
 }
 
+type LineStruct struct {
+	line string
+	len  int
+}
+
+type LineSlice []LineStruct
+
 type DocStruct struct {
 	filename      string
-	text          []string
+	text          LineSlice
 	screen        ScreenStruct
 	absolutCursor CursorStruct
 	viewport      TopLeftStruct
+}
+
+func fileExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+func (line *LineStruct) setFromString(strings ...string) {
+	line.line = ""
+	for _, s := range strings {
+		line.line = line.line + s
+	}
+	line.len = utf8.RuneCountInString(line.line)
+}
+
+func (line *LineStruct) concatenate(lines ...LineStruct) {
+	for _, l := range lines {
+		line.line = line.line + l.line
+		line.len = line.len + l.len
+	}
 }
 
 func (scr ScreenStruct) renderLine(xoffset, screenLine int, line string) {
@@ -40,7 +77,8 @@ func (scr ScreenStruct) renderLine(xoffset, screenLine int, line string) {
 	if y >= maxy {
 		y = maxy - 1
 	}
-	for x, r := range line {
+	x := 0
+	for _, r := range line {
 		x = x - xoffset
 		if x < 0 {
 			continue
@@ -48,34 +86,59 @@ func (scr ScreenStruct) renderLine(xoffset, screenLine int, line string) {
 		if x >= maxx {
 			break
 		}
-		scr.SetContent(x, y, r, nil, scr.defaultStyle)
+		var comb []rune
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			comb = []rune{r}
+			r = ' '
+			w = 1
+		}
+		scr.SetContent(x, y, r, comb, scr.defaultStyle)
+		x += w
 	}
 }
 
 func (scr ScreenStruct) renderInfoLine(line string) {
-	maxx, _ := scr.Size()
-	x := maxx - len(line)
-	ry := 0
-	for lx, r := range line {
-		rx := x + lx
-		if rx >= maxx {
-			break
+	/*
+		maxx, _ := scr.Size()
+		x := maxx - utf8.RuneCountInString(line)
+		ry := 0
+		for lx, r := range line {
+			rx := x + lx
+			if rx >= maxx {
+				break
+			}
+			scr.SetContent(rx, ry, r, nil, scr.infoStyle)
 		}
-		scr.SetContent(rx, ry, r, nil, scr.infoStyle)
+	*/
+	maxx, _ := scr.Size()
+	x := maxx - utf8.RuneCountInString(line) - 1
+	for _, c := range line {
+		var comb []rune
+		w := runewidth.RuneWidth(c)
+		if w == 0 {
+			comb = []rune{c}
+			c = ' '
+			w = 1
+		}
+		scr.SetContent(x, 0, c, comb, scr.infoStyle)
+		x += w
 	}
 }
 
-func (doc *DocStruct) loadDocument() error {
+func (doc *DocStruct) load() error {
 	// open file and read line by line
 	f, err := os.Open(doc.filename)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	doc.text = make([]string, 0, 256)
+	doc.text = make([]LineStruct, 0, 256)
 	scanner := bufio.NewScanner(f) // default delimiter is new line
+	line := LineStruct{}
 	for scanner.Scan() {
-		doc.text = append(doc.text, scanner.Text())
+		line.setFromString(scanner.Text())
+		doc.text = append(doc.text, line)
 	}
 	if err := scanner.Err(); err != nil {
 		return err
@@ -84,9 +147,26 @@ func (doc *DocStruct) loadDocument() error {
 	return nil
 }
 
+func (doc *DocStruct) save() error {
+	f, err := os.Create("data.txt")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	for _, line := range doc.text {
+		_, err = f.WriteString(line.line)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func (doc *DocStruct) alignCursorX() {
 	doc.absolutCursor.x = doc.absolutCursor.wantX
-	len := len(doc.text[doc.absolutCursor.y])
+	len := doc.text[doc.absolutCursor.y].len
 	if doc.absolutCursor.x > len {
 		doc.absolutCursor.x = len
 	}
@@ -129,7 +209,7 @@ func (doc *DocStruct) renderScreen() {
 		if len(doc.text) <= doc.viewport.y+y {
 			break
 		}
-		doc.screen.renderLine(doc.viewport.x, y, doc.text[doc.viewport.y+y])
+		doc.screen.renderLine(doc.viewport.x, y, doc.text[doc.viewport.y+y].line)
 	}
 }
 
@@ -148,7 +228,7 @@ func main() {
 	// init doc object
 	doc := DocStruct{
 		filename: args[0],
-		text:     []string{},
+		text:     []LineStruct{},
 		screen:   ScreenStruct{},
 		absolutCursor: CursorStruct{
 			x:     0,
@@ -162,6 +242,7 @@ func main() {
 	}
 
 	// Initialize tcell
+	encoding.Register()
 	screen, err := tcell.NewScreen()
 	if err != nil {
 		fmt.Println("Not supported terminal")
@@ -179,7 +260,12 @@ func main() {
 	}
 
 	// load document
-	doc.loadDocument()
+	err = doc.load()
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		doc.text = append(doc.text, LineStruct{})
+	} else {
+		log.Fatalf("%+v\n", err)
+	}
 
 	// init screen
 	doc.screen.SetStyle(doc.screen.defaultStyle)
@@ -223,7 +309,7 @@ func main() {
 				doc.adjustViewport()
 			} else if event.Key() == tcell.KeyRight {
 				// cursor right
-				l := len(doc.text[doc.absolutCursor.y])
+				l := doc.text[doc.absolutCursor.y].len
 				if doc.absolutCursor.x < l {
 					doc.absolutCursor.x++
 				} else {
@@ -244,7 +330,7 @@ func main() {
 					// cursor left when cursor is on first position of line
 					if doc.absolutCursor.y > 0 {
 						doc.absolutCursor.y--
-						doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
+						doc.absolutCursor.x = doc.text[doc.absolutCursor.y].len
 					}
 				}
 				doc.absolutCursor.wantX = doc.absolutCursor.x
@@ -257,8 +343,8 @@ func main() {
 				doc.alignCursorX()
 				doc.adjustViewport()
 			} else if event.Key() == 269 {
-				// go to end of line
-				doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
+				// go to end of line (end)
+				doc.absolutCursor.x = doc.text[doc.absolutCursor.y].len
 				doc.absolutCursor.wantX = doc.absolutCursor.x
 				doc.adjustViewport()
 			} else if event.Key() == tcell.KeyPgDn {
@@ -271,6 +357,7 @@ func main() {
 				if doc.absolutCursor.y >= len(doc.text) {
 					doc.absolutCursor.y = len(doc.text) - 1
 				}
+				doc.alignCursorX()
 				doc.adjustViewport()
 			} else if event.Key() == tcell.KeyPgUp {
 				// page up
@@ -284,27 +371,27 @@ func main() {
 				}
 				doc.alignCursorX()
 				doc.adjustViewport()
-			} else if event.Key() == tcell.KeyBackspace2 {
+			} else if event.Key() == tcell.KeyBackspace || event.Key() == tcell.KeyBackspace2 {
 				// backspace
 				x := doc.absolutCursor.x
 				y := doc.absolutCursor.y
 				if x <= 0 {
 					// backspace when cursor is on first position of line
 					if y > 0 {
-						doc.absolutCursor.x = len(doc.text[y-1])
+						doc.absolutCursor.x = doc.text[y-1].len
 						doc.absolutCursor.wantX = doc.absolutCursor.x
-						doc.text[y-1] = doc.text[y-1] + doc.text[y]
+						doc.text[y-1].concatenate(doc.text[y])
 						doc.text = append(doc.text[:y], doc.text[y+1:]...)
 						doc.absolutCursor.y--
 						doc.adjustViewport()
 						doc.renderScreen()
 					}
 				} else {
-					runes := []rune(doc.text[y])
+					runes := []rune(doc.text[y].line)
 					beforeCursor := string(runes[:x-1])
 					afterCursor := string(runes[x:])
-					doc.text[y] = beforeCursor + afterCursor
-					doc.screen.renderLine(doc.viewport.x, y-doc.viewport.y, doc.text[y]+" ")
+					doc.text[y].setFromString(beforeCursor, afterCursor)
+					doc.screen.renderLine(doc.viewport.x, y-doc.viewport.y, doc.text[y].line+" ")
 					doc.absolutCursor.x--
 					doc.absolutCursor.wantX = doc.absolutCursor.x
 					doc.alignCursorX()
@@ -314,47 +401,76 @@ func main() {
 				x := doc.absolutCursor.x
 				y := doc.absolutCursor.y
 				l := len(doc.text)
-				if x == len(doc.text[y]) {
+				if x == doc.text[y].len {
 					// pressing delete when cursor is at end of line
 					if y+1 < l {
-						doc.text[y] = doc.text[y] + doc.text[y+1]
+						doc.text[y].concatenate(doc.text[y+1])
 						if y+2 < l {
-							doc.text = doc.text[:y+1]
-						} else {
 							doc.text = append(doc.text[:y+1], doc.text[y+2:]...)
+						} else {
+							doc.text = doc.text[:y+1]
 						}
 						doc.adjustViewport()
 						doc.renderScreen()
 					}
 				} else {
 					// pressing delete somewhere in the line
-					runes := []rune(doc.text[y])
+					runes := []rune(doc.text[y].line)
 					beforeCursor := string(runes[:x])
 					afterCursor := string(runes[x+1:])
-					doc.text[y] = beforeCursor + afterCursor
-					doc.screen.renderLine(doc.viewport.x, y-doc.viewport.y, doc.text[y]+" ")
+					doc.text[y].setFromString(beforeCursor, afterCursor)
+					doc.screen.renderLine(doc.viewport.x, y-doc.viewport.y, doc.text[y].line+" ")
 					doc.alignCursorX()
 				}
+			} else if event.Key() == tcell.KeyEnter {
+				// enter
+				x := doc.absolutCursor.x
+				y := doc.absolutCursor.y
+				if len(doc.text) == y+1 { // nil or empty slice or after last element
+					doc.text = append(doc.text, LineStruct{})
+				}
+				doc.text = append(doc.text[:y+2], doc.text[y+1:]...) // index < len(text)
+				if x == doc.text[y].len {
+					// pressing enter when cursor is at end of line
+					doc.text[y+1] = LineStruct{}
+				} else {
+					// pressing enter somewhere in the line
+					runes := []rune(doc.text[y].line)
+					beforeCursor := string(runes[:x])
+					afterCursor := string(runes[x:])
+					doc.text[y].setFromString(beforeCursor)
+					doc.text[y+1].setFromString(afterCursor)
+				}
+				doc.absolutCursor.x = 0
+				doc.absolutCursor.wantX = 0
+				doc.absolutCursor.y++
+				doc.adjustViewport()
+				doc.renderScreen()
+			} else if event.Key() == tcell.KeyCtrlS {
+				// Ctrl+S save
+				os.Rename(doc.filename, doc.filename+".bak")
+				doc.save()
 			} else if event.Key() == tcell.KeyRune {
 				// insert character (rune)
 				x := doc.absolutCursor.x
 				y := doc.absolutCursor.y
-				runes := []rune(doc.text[y])
+				runes := []rune(doc.text[y].line)
 				beforeCursor := string(runes[:x])
 				afterCursor := string(runes[x:])
-				doc.text[y] = beforeCursor + string(event.Rune()) + afterCursor
-				doc.screen.renderLine(doc.viewport.x, y-doc.viewport.y, doc.text[y])
+				doc.text[y].setFromString(beforeCursor, string(event.Rune()), afterCursor)
+				doc.screen.renderLine(doc.viewport.x, y-doc.viewport.y, doc.text[y].line)
 				doc.absolutCursor.x++
 				doc.absolutCursor.wantX = doc.absolutCursor.x
 				doc.adjustViewport()
 			}
+
 			doc.screen.renderInfoLine(
-				fmt.Sprintf("Curs(x:%d y:%d)  Viewp(x:%d y:%d)  '%c' #%04d  #%x ",
+				fmt.Sprintf("Lines: %d Curs(x:%.2d y:%.2d)  Viewp(x:%d y:%d) #%04d  #%x ",
+					len(doc.text),
 					doc.absolutCursor.x,
 					doc.absolutCursor.y,
 					doc.viewport.x,
 					doc.viewport.y,
-					event.Rune(),
 					event.Key(),
 					event.Modifiers(),
 				))
