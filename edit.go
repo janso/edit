@@ -65,7 +65,7 @@ func main() {
 	}
 
 	// load document
-	err = doc.load()
+	err = doc.handleEventLoad()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			doc.text = append(doc.text, LineType{})

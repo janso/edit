@@ -227,76 +227,6 @@ func (doc *DocStruct) deleteLine(ui *UndoItemStruct, row int) {
 	}
 }
 
-func (doc *DocStruct) load() error {
-	// open file and read line by line
-	f, err := os.Open(doc.filename)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	doc.text = make([]LineType, 0, 256)
-	scanner := bufio.NewScanner(f) // default delimiter is new line
-	for scanner.Scan() {
-		doc.text = append(doc.text, LineType(scanner.Text()))
-	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (doc *DocStruct) save() error {
-	f, err := os.Create("data.txt")
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	for _, line := range doc.text {
-		_, err = f.WriteString(string(line))
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (doc *DocStruct) undo() {
-	ui, err := doc.undoStack.pop()
-	if err != nil {
-		return
-	}
-
-	for i := len(ui.actionSlice) - 1; i >= 0; i-- {
-		action := ui.actionSlice[i]
-		if action.delete {
-			doc.insertLine(nil, action.row, action.line)
-			doc.absolutCursor.x = action.cursorX
-			doc.absolutCursor.wantX = action.cursorX
-			doc.absolutCursor.y = action.row
-			doc.adjustViewport()
-		}
-		if action.insert {
-			doc.deleteLine(nil, action.row)
-			doc.absolutCursor.x = action.cursorX
-			doc.absolutCursor.wantX = action.cursorX
-			doc.absolutCursor.y = action.row
-			doc.adjustViewport()
-		}
-		if action.update {
-			doc.text[action.row] = action.line
-			doc.absolutCursor.x = action.cursorX
-			doc.absolutCursor.wantX = action.cursorX
-			doc.absolutCursor.y = action.row
-			if !doc.mustadjustViewport() {
-				doc.renderLine(action.row)
-			} else {
-				doc.adjustViewport()
-			}
-		}
-	}
-}
-
 func (doc *DocStruct) alignCursorX() {
 	doc.absolutCursor.x = doc.absolutCursor.wantX
 	len := len(doc.text[doc.absolutCursor.y])
@@ -367,203 +297,315 @@ func (doc *DocStruct) renderScreen() {
 	}
 }
 
+func (doc *DocStruct) handleEventCursorDown() {
+	doc.absolutCursor.y++
+	if doc.absolutCursor.y >= len(doc.text) {
+		doc.absolutCursor.y = len(doc.text) - 1
+	}
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventCursorUp() {
+	doc.absolutCursor.y--
+	if doc.absolutCursor.y < 0 {
+		doc.absolutCursor.y = 0
+	}
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventCursorRight() {
+	l := len(doc.text[doc.absolutCursor.y])
+	if doc.absolutCursor.x < l {
+		doc.absolutCursor.x++
+	} else {
+		// cursor right when curson is on last postion of line
+		if doc.absolutCursor.y < len(doc.text)-1 {
+			doc.absolutCursor.y++
+			doc.absolutCursor.x = 0
+		}
+	}
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventCursorLeft() {
+	if doc.absolutCursor.x > 0 {
+		doc.absolutCursor.x--
+	} else {
+		// cursor left when cursor is on first position of line
+		if doc.absolutCursor.y > 0 {
+			doc.absolutCursor.y--
+			doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
+		}
+	}
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventCursorBeginOfLine() {
+	doc.absolutCursor.x = 0
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventCursorEndOfLine() {
+	doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventPageDown() {
+	_, maxy := doc.screen.Size()
+	if maxy > 1 {
+		maxy--
+	}
+	doc.absolutCursor.y = doc.absolutCursor.y + maxy
+	if doc.absolutCursor.y >= len(doc.text) {
+		doc.absolutCursor.y = len(doc.text) - 1
+	}
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventPageUp() {
+	_, maxy := doc.screen.Size()
+	if maxy > 1 {
+		maxy--
+	}
+	doc.absolutCursor.y = doc.absolutCursor.y - maxy
+	if doc.absolutCursor.y < 0 {
+		doc.absolutCursor.y = 0
+	}
+	doc.alignCursorX()
+	doc.adjustViewport()
+}
+
+func (doc *DocStruct) handleEventInsertCharacter(r rune) {
+	undoItem := newUndoItem()
+	x := doc.absolutCursor.x
+	y := doc.absolutCursor.y
+
+	newRune := LineType{r}
+	doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], newRune, doc.text[y][x:]))
+	doc.undoStack.push(undoItem)
+
+	doc.absolutCursor.x++
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+	doc.adjustViewport()
+	doc.renderLine(y)
+}
+
+func (doc *DocStruct) handleEventBackspace() {
+	undoItem := newUndoItem()
+	x := doc.absolutCursor.x
+	y := doc.absolutCursor.y
+	if x <= 0 {
+		// backspace when cursor is on first position of line
+		if y > 0 {
+			doc.absolutCursor.x = len(doc.text[y-1])
+			doc.absolutCursor.wantX = doc.absolutCursor.x
+			doc.updateLine(&undoItem, y-1, concatenateLines(doc.text[y-1], doc.text[y]))
+			doc.deleteLine(&undoItem, y)
+			doc.undoStack.push(undoItem)
+
+			doc.absolutCursor.y--
+			doc.adjustViewport()
+			doc.renderScreen()
+		}
+	} else {
+		doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x-1], doc.text[y][x:]))
+		doc.undoStack.push(undoItem)
+		doc.renderLine(y)
+
+		doc.absolutCursor.x--
+		doc.absolutCursor.wantX = doc.absolutCursor.x
+		doc.alignCursorX()
+	}
+}
+
+func (doc *DocStruct) handleEventDelete() {
+	undoItem := newUndoItem()
+	x := doc.absolutCursor.x
+	y := doc.absolutCursor.y
+	l := len(doc.text)
+	if x == len(doc.text[y]) {
+		// pressing delete when cursor is at end of line
+		if y+1 < l {
+			doc.updateLine(&undoItem, y, concatenateLines(doc.text[y], doc.text[y+1]))
+			doc.deleteLine(&undoItem, y+1)
+			doc.undoStack.push(undoItem)
+
+			doc.adjustViewport()
+			doc.renderScreen()
+		}
+	} else {
+		// pressing delete somewhere in the line
+		doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], doc.text[y][x+1:]))
+		doc.undoStack.push(undoItem)
+
+		doc.renderLine(y)
+		doc.alignCursorX()
+	}
+}
+
+func (doc *DocStruct) handleEventEnter() {
+	undoItem := newUndoItem()
+	x := doc.absolutCursor.x
+	y := doc.absolutCursor.y
+	newLine := LineType{}
+	if x != len(doc.text[y]) {
+		// split line if cursor is not at the end
+		newLine = doc.text[y][x:]
+		doc.updateLine(&undoItem, y, doc.text[y][:x])
+	}
+	doc.insertLine(&undoItem, y+1, newLine)
+	doc.undoStack.push(undoItem)
+	doc.absolutCursor.x = 0
+	doc.absolutCursor.wantX = 0
+	doc.absolutCursor.y++
+	doc.adjustViewport()
+	doc.renderScreen()
+}
+
+func (doc *DocStruct) handleEventLoad() error {
+	// open file and read line by line
+	f, err := os.Open(doc.filename)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	doc.text = make([]LineType, 0, 256)
+	scanner := bufio.NewScanner(f) // default delimiter is new line
+	for scanner.Scan() {
+		doc.text = append(doc.text, LineType(scanner.Text()))
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (doc *DocStruct) handleEventSave() error {
+	f, err := os.Create("data.txt")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	for _, line := range doc.text {
+		_, err = f.WriteString(string(line))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (doc *DocStruct) handleEventUndo() {
+	ui, err := doc.undoStack.pop()
+	if err != nil {
+		return
+	}
+
+	for i := len(ui.actionSlice) - 1; i >= 0; i-- {
+		action := ui.actionSlice[i]
+		if action.delete {
+			doc.insertLine(nil, action.row, action.line)
+			doc.absolutCursor.x = action.cursorX
+			doc.absolutCursor.wantX = action.cursorX
+			doc.absolutCursor.y = action.row
+			doc.adjustViewport()
+		}
+		if action.insert {
+			doc.deleteLine(nil, action.row)
+			doc.absolutCursor.x = action.cursorX
+			doc.absolutCursor.wantX = action.cursorX
+			doc.absolutCursor.y = action.row
+			doc.adjustViewport()
+		}
+		if action.update {
+			doc.text[action.row] = action.line
+			doc.absolutCursor.x = action.cursorX
+			doc.absolutCursor.wantX = action.cursorX
+			doc.absolutCursor.y = action.row
+			if !doc.mustadjustViewport() {
+				doc.renderLine(action.row)
+			} else {
+				doc.adjustViewport()
+			}
+		}
+	}
+}
+
+func (doc *DocStruct) handleEventInsertTab() {
+	undoItem := newUndoItem()
+	const fakeTab string = "    "
+	x := doc.absolutCursor.x
+	y := doc.absolutCursor.y
+	doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], LineType(fakeTab), doc.text[y][x:]))
+	doc.undoStack.push(undoItem)
+
+	doc.renderLine(y)
+	doc.absolutCursor.x += len(fakeTab)
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+}
+
 func (doc *DocStruct) handleKeyEventCursor(event *tcell.EventKey) (handled bool) {
 	handled = true
 	if event.Key() == tcell.KeyDown {
-		// cursor down
-		doc.absolutCursor.y++
-		if doc.absolutCursor.y >= len(doc.text) {
-			doc.absolutCursor.y = len(doc.text) - 1
-		}
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventCursorDown()
 	} else if event.Key() == tcell.KeyUp {
-		// cursor up
-		doc.absolutCursor.y--
-		if doc.absolutCursor.y < 0 {
-			doc.absolutCursor.y = 0
-		}
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventCursorUp()
 	} else if event.Key() == tcell.KeyRight {
-		// cursor right
-		l := len(doc.text[doc.absolutCursor.y])
-		if doc.absolutCursor.x < l {
-			doc.absolutCursor.x++
-		} else {
-			// cursor right when curson is on last postion of line
-			if doc.absolutCursor.y < len(doc.text)-1 {
-				doc.absolutCursor.y++
-				doc.absolutCursor.x = 0
-			}
-		}
-		doc.absolutCursor.wantX = doc.absolutCursor.x
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventCursorRight()
 	} else if event.Key() == tcell.KeyLeft {
-		// cursor left
-		if doc.absolutCursor.x > 0 {
-			doc.absolutCursor.x--
-		} else {
-			// cursor left when cursor is on first position of line
-			if doc.absolutCursor.y > 0 {
-				doc.absolutCursor.y--
-				doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
-			}
-		}
-		doc.absolutCursor.wantX = doc.absolutCursor.x
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventCursorLeft()
 	} else if event.Key() == 268 {
-		// go to begin of line (pos1)
-		doc.absolutCursor.x = 0
-		doc.absolutCursor.wantX = doc.absolutCursor.x
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventCursorBeginOfLine()
 	} else if event.Key() == 269 {
-		// go to end of line (end)
-		doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
-		doc.absolutCursor.wantX = doc.absolutCursor.x
-		doc.adjustViewport()
+		doc.handleEventCursorEndOfLine()
 	} else if event.Key() == tcell.KeyPgDn {
-		// page down
-		_, maxy := doc.screen.Size()
-		if maxy > 1 {
-			maxy--
-		}
-		doc.absolutCursor.y = doc.absolutCursor.y + maxy
-		if doc.absolutCursor.y >= len(doc.text) {
-			doc.absolutCursor.y = len(doc.text) - 1
-		}
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventPageDown()
 	} else if event.Key() == tcell.KeyPgUp {
-		// page up
-		_, maxy := doc.screen.Size()
-		if maxy > 1 {
-			maxy--
-		}
-		doc.absolutCursor.y = doc.absolutCursor.y - maxy
-		if doc.absolutCursor.y < 0 {
-			doc.absolutCursor.y = 0
-		}
-		doc.alignCursorX()
-		doc.adjustViewport()
+		doc.handleEventPageUp()
 	} else {
 		handled = false
 	}
-
 	return
 }
 
 func (doc *DocStruct) handleKeyEvent(event *tcell.EventKey) {
 	doc.screen.renderInfoLine(
-		fmt.Sprintf("C: %3d, %3d - len(text): %d", doc.absolutCursor.x, doc.absolutCursor.y, len(doc.text)))
+		fmt.Sprintf("C: %3d,%3d | %.3d  %c  %x",
+			doc.absolutCursor.x, doc.absolutCursor.y,
+			event.Key(),
+			event.Rune(),
+			event.Modifiers(),
+		))
 
 	if doc.handleKeyEventCursor(event) {
 		return
-	}
-	if event.Key() == tcell.KeyTab {
-		// tab
-		undoItem := newUndoItem()
-		const fakeTab string = "    "
-		x := doc.absolutCursor.x
-		y := doc.absolutCursor.y
-		doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], LineType(fakeTab), doc.text[y][x:]))
-		doc.undoStack.push(undoItem)
-
-		doc.renderLine(y)
-		doc.absolutCursor.x += len(fakeTab)
-		doc.absolutCursor.wantX = doc.absolutCursor.x
-
+	} else if event.Key() == tcell.KeyRune {
+		doc.handleEventInsertCharacter(event.Rune())
 	} else if event.Key() == tcell.KeyBackspace || event.Key() == tcell.KeyBackspace2 {
-		// backspace
-		undoItem := newUndoItem()
-		x := doc.absolutCursor.x
-		y := doc.absolutCursor.y
-		if x <= 0 {
-			// backspace when cursor is on first position of line
-			if y > 0 {
-				doc.absolutCursor.x = len(doc.text[y-1])
-				doc.absolutCursor.wantX = doc.absolutCursor.x
-				doc.updateLine(&undoItem, y-1, concatenateLines(doc.text[y-1], doc.text[y]))
-				doc.deleteLine(&undoItem, y)
-				doc.undoStack.push(undoItem)
-
-				doc.absolutCursor.y--
-				doc.adjustViewport()
-				doc.renderScreen()
-			}
-		} else {
-			doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x-1], doc.text[y][x:]))
-			doc.undoStack.push(undoItem)
-			doc.renderLine(y)
-
-			doc.absolutCursor.x--
-			doc.absolutCursor.wantX = doc.absolutCursor.x
-			doc.alignCursorX()
-		}
+		doc.handleEventBackspace()
 	} else if event.Key() == 271 {
-		// delete
-		undoItem := newUndoItem()
-		x := doc.absolutCursor.x
-		y := doc.absolutCursor.y
-		l := len(doc.text)
-		if x == len(doc.text[y]) {
-			// pressing delete when cursor is at end of line
-			if y+1 < l {
-				doc.updateLine(&undoItem, y, concatenateLines(doc.text[y], doc.text[y+1]))
-				doc.deleteLine(&undoItem, y+1)
-				doc.undoStack.push(undoItem)
-
-				doc.adjustViewport()
-				doc.renderScreen()
-			}
-		} else {
-			// pressing delete somewhere in the line
-			doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], doc.text[y][x+1:]))
-			doc.undoStack.push(undoItem)
-
-			doc.renderLine(y)
-			doc.alignCursorX()
-		}
+		doc.handleEventDelete()
 	} else if event.Key() == tcell.KeyEnter {
-		// enter
-		undoItem := newUndoItem()
-		x := doc.absolutCursor.x
-		y := doc.absolutCursor.y
-		newLine := LineType{}
-		if x != len(doc.text[y]) {
-			// split line if cursor is not at the end
-			newLine = doc.text[y][x:]
-			doc.updateLine(&undoItem, y, doc.text[y][:x])
-		}
-		doc.insertLine(&undoItem, y+1, newLine)
-		doc.undoStack.push(undoItem)
-		doc.absolutCursor.x = 0
-		doc.absolutCursor.wantX = 0
-		doc.absolutCursor.y++
-		doc.adjustViewport()
-		doc.renderScreen()
+		doc.handleEventEnter()
 	} else if event.Key() == tcell.KeyCtrlZ || event.Key() == tcell.KeyCtrlR {
 		// Undo
-		doc.undo()
+		doc.handleEventUndo()
 	} else if event.Key() == tcell.KeyCtrlS {
 		// save
-		doc.save()
-	} else if event.Key() == tcell.KeyRune {
-		// insert character (rune)
-		undoItem := newUndoItem()
-		x := doc.absolutCursor.x
-		y := doc.absolutCursor.y
-
-		newRune := LineType{event.Rune()}
-		doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], newRune, doc.text[y][x:]))
-		doc.undoStack.push(undoItem)
-
-		doc.absolutCursor.x++
-		doc.absolutCursor.wantX = doc.absolutCursor.x
-		doc.adjustViewport()
-		doc.renderLine(y)
+		doc.handleEventSave()
+	} else if event.Key() == tcell.KeyTab {
+		doc.handleEventInsertTab()
 	}
 }
