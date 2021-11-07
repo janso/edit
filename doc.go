@@ -16,7 +16,7 @@ type ActionStruct struct {
 	delete  bool
 	insert  bool
 	update  bool
-	line    LineStruct
+	line    LineType
 	cursorX int
 }
 
@@ -143,26 +143,17 @@ func (scr ScreenStruct) renderInfoLine(line string) {
 	}
 }
 
-type LineStruct struct {
-	line string
-	len  int
-}
+type LineType []rune
 
-func newLine(s string) LineStruct {
-	line := LineStruct{line: s}
-	line.len = utf8.RuneCountInString(line.line)
+func concatenateLines(lines ...LineType) LineType {
+	line := LineType{}
+	for _, l := range lines {
+		line = append(line, l...)
+	}
 	return line
 }
 
-func (line *LineStruct) setFromString(strings ...string) {
-	line.line = ""
-	for _, s := range strings {
-		line.line = line.line + s
-	}
-	line.len = utf8.RuneCountInString(line.line)
-}
-
-type LineSlice []LineStruct
+type LineSlice []LineType
 
 type DocStruct struct {
 	filename      string
@@ -173,7 +164,7 @@ type DocStruct struct {
 	undoStack     UndoStackStruct
 }
 
-func (doc *DocStruct) updateLine(ui *UndoItemStruct, row int, line string) {
+func (doc *DocStruct) updateLine(ui *UndoItemStruct, row int, line LineType) {
 	if ui != nil {
 		// create action for undo
 		action := ActionStruct{
@@ -187,13 +178,13 @@ func (doc *DocStruct) updateLine(ui *UndoItemStruct, row int, line string) {
 		ui.actionSlice = append(ui.actionSlice, action)
 	}
 	// do actual update
-	doc.text[row].setFromString(line)
+	doc.text[row] = line
 }
 
-func (doc *DocStruct) insertLine(ui *UndoItemStruct, row int, line string) {
+func (doc *DocStruct) insertLine(ui *UndoItemStruct, row int, line LineType) {
 	// insert line
 	if row >= len(doc.text) {
-		doc.text = append(doc.text, LineStruct{})
+		doc.text = append(doc.text, LineType{})
 	} else {
 		doc.text = append(doc.text[:row+1], doc.text[row:]...)
 	}
@@ -243,10 +234,10 @@ func (doc *DocStruct) load() error {
 		return err
 	}
 	defer f.Close()
-	doc.text = make([]LineStruct, 0, 256)
+	doc.text = make([]LineType, 0, 256)
 	scanner := bufio.NewScanner(f) // default delimiter is new line
 	for scanner.Scan() {
-		doc.text = append(doc.text, newLine(scanner.Text()))
+		doc.text = append(doc.text, LineType(scanner.Text()))
 	}
 	if err := scanner.Err(); err != nil {
 		return err
@@ -262,7 +253,7 @@ func (doc *DocStruct) save() error {
 	}
 	defer f.Close()
 	for _, line := range doc.text {
-		_, err = f.WriteString(line.line)
+		_, err = f.WriteString(string(line))
 		if err != nil {
 			return err
 		}
@@ -279,7 +270,7 @@ func (doc *DocStruct) undo() {
 	for i := len(ui.actionSlice) - 1; i >= 0; i-- {
 		action := ui.actionSlice[i]
 		if action.delete {
-			doc.insertLine(nil, action.row, action.line.line)
+			doc.insertLine(nil, action.row, action.line)
 			doc.absolutCursor.x = action.cursorX
 			doc.absolutCursor.wantX = action.cursorX
 			doc.absolutCursor.y = action.row
@@ -308,7 +299,7 @@ func (doc *DocStruct) undo() {
 
 func (doc *DocStruct) alignCursorX() {
 	doc.absolutCursor.x = doc.absolutCursor.wantX
-	len := doc.text[doc.absolutCursor.y].len
+	len := len(doc.text[doc.absolutCursor.y])
 	if doc.absolutCursor.x > len {
 		doc.absolutCursor.x = len
 	}
@@ -362,7 +353,7 @@ func (doc *DocStruct) showCursor() {
 }
 
 func (doc *DocStruct) renderLine(row int) {
-	doc.screen.renderLine(doc.viewport.x, row, doc.text[doc.viewport.y+row].line)
+	doc.screen.renderLine(doc.viewport.x, row, string(doc.text[doc.viewport.y+row]))
 }
 
 func (doc *DocStruct) renderScreen() {
@@ -376,7 +367,7 @@ func (doc *DocStruct) renderScreen() {
 	}
 }
 
-func (doc *DocStruct) handleEventCursor(event *tcell.EventKey) (handled bool) {
+func (doc *DocStruct) handleKeyEventCursor(event *tcell.EventKey) (handled bool) {
 	handled = true
 	if event.Key() == tcell.KeyDown {
 		// cursor down
@@ -396,7 +387,7 @@ func (doc *DocStruct) handleEventCursor(event *tcell.EventKey) (handled bool) {
 		doc.adjustViewport()
 	} else if event.Key() == tcell.KeyRight {
 		// cursor right
-		l := doc.text[doc.absolutCursor.y].len
+		l := len(doc.text[doc.absolutCursor.y])
 		if doc.absolutCursor.x < l {
 			doc.absolutCursor.x++
 		} else {
@@ -417,7 +408,7 @@ func (doc *DocStruct) handleEventCursor(event *tcell.EventKey) (handled bool) {
 			// cursor left when cursor is on first position of line
 			if doc.absolutCursor.y > 0 {
 				doc.absolutCursor.y--
-				doc.absolutCursor.x = doc.text[doc.absolutCursor.y].len
+				doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
 			}
 		}
 		doc.absolutCursor.wantX = doc.absolutCursor.x
@@ -431,7 +422,7 @@ func (doc *DocStruct) handleEventCursor(event *tcell.EventKey) (handled bool) {
 		doc.adjustViewport()
 	} else if event.Key() == 269 {
 		// go to end of line (end)
-		doc.absolutCursor.x = doc.text[doc.absolutCursor.y].len
+		doc.absolutCursor.x = len(doc.text[doc.absolutCursor.y])
 		doc.absolutCursor.wantX = doc.absolutCursor.x
 		doc.adjustViewport()
 	} else if event.Key() == tcell.KeyPgDn {
@@ -462,14 +453,14 @@ func (doc *DocStruct) handleEventCursor(event *tcell.EventKey) (handled bool) {
 		handled = false
 	}
 
-	doc.screen.renderInfoLine(
-		fmt.Sprintf("C: %3d, %3d - len(text): %d", doc.absolutCursor.x, doc.absolutCursor.y, len(doc.text)))
-
 	return
 }
 
-func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
-	if doc.handleEventCursor(event) {
+func (doc *DocStruct) handleKeyEvent(event *tcell.EventKey) {
+	doc.screen.renderInfoLine(
+		fmt.Sprintf("C: %3d, %3d - len(text): %d", doc.absolutCursor.x, doc.absolutCursor.y, len(doc.text)))
+
+	if doc.handleKeyEventCursor(event) {
 		return
 	}
 	if event.Key() == tcell.KeyTab {
@@ -478,10 +469,7 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 		const fakeTab string = "    "
 		x := doc.absolutCursor.x
 		y := doc.absolutCursor.y
-		runes := []rune(doc.text[y].line)
-		beforeCursor := string(runes[:x])
-		afterCursor := string(runes[x:])
-		doc.updateLine(&undoItem, y, beforeCursor+fakeTab+afterCursor)
+		doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], LineType(fakeTab), doc.text[y][x:]))
 		doc.undoStack.push(undoItem)
 
 		doc.renderLine(y)
@@ -496,9 +484,9 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 		if x <= 0 {
 			// backspace when cursor is on first position of line
 			if y > 0 {
-				doc.absolutCursor.x = doc.text[y-1].len
+				doc.absolutCursor.x = len(doc.text[y-1])
 				doc.absolutCursor.wantX = doc.absolutCursor.x
-				doc.updateLine(&undoItem, y-1, doc.text[y-1].line+doc.text[y].line)
+				doc.updateLine(&undoItem, y-1, concatenateLines(doc.text[y-1], doc.text[y]))
 				doc.deleteLine(&undoItem, y)
 				doc.undoStack.push(undoItem)
 
@@ -507,10 +495,7 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 				doc.renderScreen()
 			}
 		} else {
-			runes := []rune(doc.text[y].line)
-			beforeCursor := string(runes[:x-1])
-			afterCursor := string(runes[x:])
-			doc.updateLine(&undoItem, y, beforeCursor+afterCursor)
+			doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x-1], doc.text[y][x:]))
 			doc.undoStack.push(undoItem)
 			doc.renderLine(y)
 
@@ -524,10 +509,10 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 		x := doc.absolutCursor.x
 		y := doc.absolutCursor.y
 		l := len(doc.text)
-		if x == doc.text[y].len {
+		if x == len(doc.text[y]) {
 			// pressing delete when cursor is at end of line
 			if y+1 < l {
-				doc.updateLine(&undoItem, y, doc.text[y].line+doc.text[y+1].line)
+				doc.updateLine(&undoItem, y, concatenateLines(doc.text[y], doc.text[y+1]))
 				doc.deleteLine(&undoItem, y+1)
 				doc.undoStack.push(undoItem)
 
@@ -536,10 +521,7 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 			}
 		} else {
 			// pressing delete somewhere in the line
-			runes := []rune(doc.text[y].line)
-			beforeCursor := string(runes[:x])
-			afterCursor := string(runes[x+1:])
-			doc.updateLine(&undoItem, y, beforeCursor+afterCursor)
+			doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], doc.text[y][x+1:]))
 			doc.undoStack.push(undoItem)
 
 			doc.renderLine(y)
@@ -550,13 +532,11 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 		undoItem := newUndoItem()
 		x := doc.absolutCursor.x
 		y := doc.absolutCursor.y
-		newLine := ""
-		if x != doc.text[y].len {
+		newLine := LineType{}
+		if x != len(doc.text[y]) {
 			// split line if cursor is not at the end
-			runes := []rune(doc.text[y].line)
-			beforeCursor := string(runes[:x])
-			newLine = string(runes[x:])
-			doc.updateLine(&undoItem, y, beforeCursor)
+			newLine = doc.text[y][x:]
+			doc.updateLine(&undoItem, y, doc.text[y][:x])
 		}
 		doc.insertLine(&undoItem, y+1, newLine)
 		doc.undoStack.push(undoItem)
@@ -565,7 +545,7 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 		doc.absolutCursor.y++
 		doc.adjustViewport()
 		doc.renderScreen()
-	} else if event.Key() == tcell.KeyCtrlZ {
+	} else if event.Key() == tcell.KeyCtrlZ || event.Key() == tcell.KeyCtrlR {
 		// Undo
 		doc.undo()
 	} else if event.Key() == tcell.KeyCtrlS {
@@ -577,10 +557,8 @@ func (doc *DocStruct) handleEvent(event *tcell.EventKey) {
 		x := doc.absolutCursor.x
 		y := doc.absolutCursor.y
 
-		runes := []rune(doc.text[y].line)
-		beforeCursor := string(runes[:x])
-		afterCursor := string(runes[x:])
-		doc.updateLine(&undoItem, y, beforeCursor+string(event.Rune())+afterCursor)
+		newRune := LineType{event.Rune()}
+		doc.updateLine(&undoItem, y, concatenateLines(doc.text[y][:x], newRune, doc.text[y][x:]))
 		doc.undoStack.push(undoItem)
 
 		doc.absolutCursor.x++

@@ -36,7 +36,7 @@ func main() {
 	// init doc object
 	doc := DocStruct{
 		filename:      args[0],
-		text:          []LineStruct{},
+		text:          []LineType{},
 		screen:        ScreenStruct{},
 		absolutCursor: CursorStruct{x: 0, y: 0, wantX: 0},
 		viewport:      TopLeftStruct{x: 0, y: 0},
@@ -68,7 +68,7 @@ func main() {
 	err = doc.load()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			doc.text = append(doc.text, LineStruct{})
+			doc.text = append(doc.text, LineType{})
 		} else {
 			log.Fatalf("%+v\n", err)
 		}
@@ -103,7 +103,7 @@ func main() {
 				doc.screen.Beep()
 			} else {
 				// handle key events
-				doc.handleEvent(event)
+				doc.handleKeyEvent(event)
 			}
 			doc.showCursor()
 		}
