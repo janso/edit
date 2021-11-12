@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
@@ -85,46 +86,53 @@ type CursorStruct struct {
 	x, y, wantX int
 }
 
-type TopLeftStruct struct {
+type xyStruct struct {
 	x, y int
+}
+
+func (xy *xyStruct) lowerOrEqual(xy2 xyStruct) bool {
+	if xy.y < xy2.y {
+		return true
+	} else if xy.y > xy2.y {
+		return false
+	} else {
+		// equal row
+		if xy.x <= xy2.x {
+			return true
+		} else {
+			return false
+		}
+	}
+}
+
+func (xy *xyStruct) biggerOrEqual(xy2 xyStruct) bool {
+	if xy.y > xy2.y {
+		return true
+	} else if xy.y < xy2.y {
+		return false
+	} else {
+		// equal row
+		if xy.x >= xy2.x {
+			return true
+		} else {
+			return false
+		}
+	}
+}
+
+func (xy xyStruct) in(sel selectionStruct) bool {
+	if sel.begin.lowerOrEqual(xy) && sel.end.biggerOrEqual(xy) {
+		return true
+	} else {
+		return false
+	}
 }
 
 type ScreenStruct struct {
 	tcell.Screen
-	defaultStyle tcell.Style
-	infoStyle    tcell.Style
-}
-
-func (scr ScreenStruct) renderLine(xoffset, row int, line string) {
-	maxx, maxy := scr.Size()
-	y := row
-	if y < 0 {
-		y = 0
-	}
-	if y >= maxy {
-		y = maxy - 1
-	}
-	x := -xoffset
-	for _, r := range line {
-		var comb []rune
-		w := runewidth.RuneWidth(r)
-		if w == 0 {
-			comb = []rune{r}
-			r = ' '
-			w = 1
-		}
-		if x >= 0 {
-			scr.SetContent(x, y, r, comb, scr.defaultStyle)
-		}
-		x += w
-		if x >= maxx {
-			break
-		}
-	}
-	// clear rest of line
-	for ; x < maxx-1; x++ {
-		scr.SetContent(x, y, ' ', nil, scr.defaultStyle)
-	}
+	defaultStyle   tcell.Style
+	selectionStyle tcell.Style
+	infoStyle      tcell.Style
 }
 
 func (scr ScreenStruct) renderInfoLine(line string) {
@@ -155,13 +163,18 @@ func concatenateLines(lines ...LineType) LineType {
 
 type LineSlice []LineType
 
+type selectionStruct struct {
+	begin, end xyStruct
+}
+
 type DocStruct struct {
 	filename      string
 	text          LineSlice
 	screen        ScreenStruct
 	absolutCursor CursorStruct
-	viewport      TopLeftStruct
+	viewport      xyStruct
 	undoStack     UndoStackStruct
+	selection     selectionStruct
 }
 
 func (doc *DocStruct) updateLine(ui *UndoItemStruct, row int, line LineType) {
@@ -283,7 +296,44 @@ func (doc *DocStruct) showCursor() {
 }
 
 func (doc *DocStruct) renderLine(row int) {
-	doc.screen.renderLine(doc.viewport.x, row, string(doc.text[doc.viewport.y+row]))
+	// doc.screen.renderLine(doc.viewport.x, row, string(doc.text[doc.viewport.y+row]))
+	style := doc.screen.defaultStyle
+	maxx, maxy := doc.screen.Size()
+	xy := xyStruct{
+		x: -doc.viewport.x,
+		y: row,
+	}
+	if xy.y < 0 {
+		xy.y = 0
+	}
+	if xy.y >= maxy {
+		xy.y = maxy - 1
+	}
+	for _, r := range doc.text[doc.viewport.y+row] {
+		var comb []rune
+		w := runewidth.RuneWidth(r)
+		if w == 0 {
+			comb = []rune{r}
+			r = ' '
+			w = 1
+		}
+		if xy.x >= 0 {
+			if xy.in(doc.selection) {
+				style = doc.screen.selectionStyle
+			} else {
+				style = doc.screen.defaultStyle
+			}
+			doc.screen.SetContent(xy.x, xy.y, r, comb, style)
+		}
+		xy.x += w
+		if xy.x >= maxx {
+			break
+		}
+	}
+	// clear rest of line
+	for ; xy.x < maxx-1; xy.x++ {
+		doc.screen.SetContent(xy.x, xy.y, ' ', nil, doc.screen.defaultStyle)
+	}
 }
 
 func (doc *DocStruct) renderScreen() {
@@ -315,25 +365,62 @@ func (doc *DocStruct) handleEventCursorUp() {
 	doc.adjustViewport()
 }
 
-func (doc *DocStruct) handleEventCursorRight() {
+func (doc *DocStruct) handleEventCursorRight(event *tcell.EventKey) {
 	l := len(doc.text[doc.absolutCursor.y])
+	// go the right
 	if doc.absolutCursor.x < l {
-		doc.absolutCursor.x++
+		if event.Modifiers()&2 != 0 {
+			// control is pressed - go one word to the right
+			for ; doc.absolutCursor.x < l; doc.absolutCursor.x++ {
+				r := doc.text[doc.absolutCursor.y][doc.absolutCursor.x]
+				if unicode.IsLetter(r) || unicode.IsDigit(r) {
+					break
+				}
+			}
+			for ; doc.absolutCursor.x < l; doc.absolutCursor.x++ {
+				r := doc.text[doc.absolutCursor.y][doc.absolutCursor.x]
+				if !(unicode.IsLetter(r) || unicode.IsDigit(r)) {
+					break
+				}
+			}
+		} else {
+			// go one character to the right
+			doc.absolutCursor.x++
+		}
 	} else {
-		// cursor right when curson is on last postion of line
+		// if cursor is on last position in line, go to beginning of next line
 		if doc.absolutCursor.y < len(doc.text)-1 {
 			doc.absolutCursor.y++
 			doc.absolutCursor.x = 0
 		}
 	}
+
 	doc.absolutCursor.wantX = doc.absolutCursor.x
 	doc.alignCursorX()
 	doc.adjustViewport()
 }
 
-func (doc *DocStruct) handleEventCursorLeft() {
+func (doc *DocStruct) handleEventCursorLeft(event *tcell.EventKey) {
 	if doc.absolutCursor.x > 0 {
-		doc.absolutCursor.x--
+		if event.Modifiers()&2 != 0 {
+			doc.absolutCursor.x--
+			// control is pressed - go one word left
+			for ; doc.absolutCursor.x > 0; doc.absolutCursor.x-- {
+				r := doc.text[doc.absolutCursor.y][doc.absolutCursor.x]
+				if !(unicode.IsLetter(r) || unicode.IsDigit(r)) {
+					break
+				}
+			}
+			for ; doc.absolutCursor.x > 0; doc.absolutCursor.x-- {
+				r := doc.text[doc.absolutCursor.y][doc.absolutCursor.x]
+				if unicode.IsLetter(r) || unicode.IsDigit(r) {
+					break
+				}
+			}
+		} else {
+			// go one character left
+			doc.absolutCursor.x--
+		}
 	} else {
 		// cursor left when cursor is on first position of line
 		if doc.absolutCursor.y > 0 {
@@ -563,9 +650,9 @@ func (doc *DocStruct) handleKeyEventCursor(event *tcell.EventKey) (handled bool)
 	} else if event.Key() == tcell.KeyUp {
 		doc.handleEventCursorUp()
 	} else if event.Key() == tcell.KeyRight {
-		doc.handleEventCursorRight()
+		doc.handleEventCursorRight(event)
 	} else if event.Key() == tcell.KeyLeft {
-		doc.handleEventCursorLeft()
+		doc.handleEventCursorLeft(event)
 	} else if event.Key() == 268 {
 		doc.handleEventCursorBeginOfLine()
 	} else if event.Key() == 269 {

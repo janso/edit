@@ -39,10 +39,20 @@ func main() {
 		text:          []LineType{},
 		screen:        ScreenStruct{},
 		absolutCursor: CursorStruct{x: 0, y: 0, wantX: 0},
-		viewport:      TopLeftStruct{x: 0, y: 0},
+		viewport:      xyStruct{x: 0, y: 0},
 		undoStack: UndoStackStruct{
 			undoSlice: []UndoItemStruct{},
 			top:       0,
+		},
+		selection: selectionStruct{
+			begin: xyStruct{
+				x: 0,
+				y: 0,
+			},
+			end: xyStruct{
+				x: 10,
+				y: 0,
+			},
 		},
 	}
 
@@ -50,7 +60,7 @@ func main() {
 	encoding.Register()
 	screen, err := tcell.NewScreen()
 	if err != nil {
-		fmt.Println("Not supported terminal")
+		fmt.Println("error creating screen")
 		log.Fatalf("%+v\n", err)
 	}
 	doc.screen = ScreenStruct{
@@ -58,9 +68,11 @@ func main() {
 		defaultStyle: tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorReset),
 		infoStyle:    tcell.StyleDefault.Background(tcell.ColorReset).Foreground(tcell.ColorRed),
 	}
+	doc.screen.selectionStyle = doc.screen.defaultStyle.Reverse(true)
+
 	err = doc.screen.Init()
 	if err != nil {
-		fmt.Println("Not supported terminal")
+		fmt.Println("error initializing screen")
 		log.Fatalf("%+v\n", err)
 	}
 
