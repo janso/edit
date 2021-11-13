@@ -32,27 +32,23 @@ func main() {
 		}
 		args := flag.Args()
 	*/
+	fmt.Println("edit started") // ToDo remove!
 	args := []string{"test.txt"}
 	// init doc object
 	doc := DocStruct{
-		filename:      args[0],
-		text:          []LineType{},
-		screen:        ScreenStruct{},
-		absolutCursor: CursorStruct{x: 0, y: 0, wantX: 0},
-		viewport:      xyStruct{x: 0, y: 0},
+		filename:       args[0],
+		text:           []LineType{},
+		screen:         ScreenStruct{},
+		absolutCursor:  CursorStruct{x: 20, y: 7, wantX: 0},
+		previousCursor: CursorStruct{x: 0, y: 0, wantX: 0},
+		viewport:       xyStruct{x: 0, y: 0},
 		undoStack: UndoStackStruct{
 			undoSlice: []UndoItemStruct{},
 			top:       0,
 		},
 		selection: selectionStruct{
-			begin: xyStruct{
-				x: 0,
-				y: 0,
-			},
-			end: xyStruct{
-				x: 10,
-				y: 0,
-			},
+			begin: xyStruct{x: 8, y: 4},
+			end:   xyStruct{x: 12, y: 6},
 		},
 	}
 
@@ -100,8 +96,8 @@ func main() {
 		switch event := event.(type) {
 		case *tcell.EventResize:
 			doc.renderScreen()
-			// doc.screen.renderLine(1, 0, "ABC")
 			doc.screen.Sync()
+
 		case *tcell.EventKey:
 			if event.Key() == tcell.KeyEscape || event.Key() == tcell.KeyCtrlC {
 				// exit
@@ -110,6 +106,7 @@ func main() {
 			} else if event.Key() == tcell.KeyCtrlL {
 				// sync
 				doc.screen.Sync()
+				doc.renderScreen()
 			} else if event.Key() == tcell.KeyCtrlA {
 				doc.renderScreen()
 				doc.screen.Beep()

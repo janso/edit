@@ -90,13 +90,13 @@ type xyStruct struct {
 	x, y int
 }
 
-func (xy *xyStruct) lowerOrEqual(xy2 xyStruct) bool {
+func (xy *xyStruct) lessOrEqual(xy2 xyStruct) bool {
 	if xy.y < xy2.y {
 		return true
 	} else if xy.y > xy2.y {
 		return false
 	} else {
-		// equal row
+		// for equal row compare columns
 		if xy.x <= xy2.x {
 			return true
 		} else {
@@ -105,13 +105,13 @@ func (xy *xyStruct) lowerOrEqual(xy2 xyStruct) bool {
 	}
 }
 
-func (xy *xyStruct) biggerOrEqual(xy2 xyStruct) bool {
+func (xy *xyStruct) greaterOrEqual(xy2 xyStruct) bool {
 	if xy.y > xy2.y {
 		return true
 	} else if xy.y < xy2.y {
 		return false
 	} else {
-		// equal row
+		// for equal row compare columns
 		if xy.x >= xy2.x {
 			return true
 		} else {
@@ -121,7 +121,7 @@ func (xy *xyStruct) biggerOrEqual(xy2 xyStruct) bool {
 }
 
 func (xy xyStruct) in(sel selectionStruct) bool {
-	if sel.begin.lowerOrEqual(xy) && sel.end.biggerOrEqual(xy) {
+	if sel.begin.lessOrEqual(xy) && sel.end.greaterOrEqual(xy) {
 		return true
 	} else {
 		return false
@@ -133,22 +133,6 @@ type ScreenStruct struct {
 	defaultStyle   tcell.Style
 	selectionStyle tcell.Style
 	infoStyle      tcell.Style
-}
-
-func (scr ScreenStruct) renderInfoLine(line string) {
-	maxx, _ := scr.Size()
-	x := maxx - utf8.RuneCountInString(line) - 1
-	for _, c := range line {
-		var comb []rune
-		w := runewidth.RuneWidth(c)
-		if w == 0 {
-			comb = []rune{c}
-			c = ' '
-			w = 1
-		}
-		scr.SetContent(x, 0, c, comb, scr.infoStyle)
-		x += w
-	}
 }
 
 type LineType []rune
@@ -167,14 +151,21 @@ type selectionStruct struct {
 	begin, end xyStruct
 }
 
+func (sel *selectionStruct) orderBeginEnd() {
+	if sel.end.lessOrEqual(sel.begin) {
+		sel.end, sel.begin = sel.begin, sel.end
+	}
+}
+
 type DocStruct struct {
-	filename      string
-	text          LineSlice
-	screen        ScreenStruct
-	absolutCursor CursorStruct
-	viewport      xyStruct
-	undoStack     UndoStackStruct
-	selection     selectionStruct
+	filename       string
+	text           LineSlice
+	screen         ScreenStruct
+	absolutCursor  CursorStruct
+	previousCursor CursorStruct
+	viewport       xyStruct
+	undoStack      UndoStackStruct
+	selection      selectionStruct
 }
 
 func (doc *DocStruct) updateLine(ui *UndoItemStruct, row int, line LineType) {
@@ -296,20 +287,19 @@ func (doc *DocStruct) showCursor() {
 }
 
 func (doc *DocStruct) renderLine(row int) {
-	// doc.screen.renderLine(doc.viewport.x, row, string(doc.text[doc.viewport.y+row]))
 	style := doc.screen.defaultStyle
 	maxx, maxy := doc.screen.Size()
-	xy := xyStruct{
-		x: -doc.viewport.x,
-		y: row,
+	xyRelative := xyStruct{x: -doc.viewport.x, y: row}
+	if xyRelative.y < 0 {
+		xyRelative.y = 0
 	}
-	if xy.y < 0 {
-		xy.y = 0
+	if xyRelative.y >= maxy {
+		xyRelative.y = maxy - 1
 	}
-	if xy.y >= maxy {
-		xy.y = maxy - 1
-	}
-	for _, r := range doc.text[doc.viewport.y+row] {
+	xyAbsolute := xyStruct{x: 0, y: doc.viewport.y + row}
+
+	// iterate runes of line
+	for _, r := range doc.text[xyAbsolute.y] {
 		var comb []rune
 		w := runewidth.RuneWidth(r)
 		if w == 0 {
@@ -317,22 +307,33 @@ func (doc *DocStruct) renderLine(row int) {
 			r = ' '
 			w = 1
 		}
-		if xy.x >= 0 {
-			if xy.in(doc.selection) {
+		if xyRelative.x >= 0 {
+			if xyAbsolute.in(doc.selection) {
 				style = doc.screen.selectionStyle
 			} else {
 				style = doc.screen.defaultStyle
 			}
-			doc.screen.SetContent(xy.x, xy.y, r, comb, style)
+			doc.screen.SetContent(xyRelative.x, xyRelative.y, r, comb, style)
 		}
-		xy.x += w
-		if xy.x >= maxx {
+		xyRelative.x += w
+		xyAbsolute.x++
+		if xyRelative.x >= maxx {
 			break
 		}
 	}
+
+	// mark the first character if an empty line is part of selection
+	if xyRelative.x == 0 && xyAbsolute.in(doc.selection) {
+		doc.screen.SetContent(0, xyRelative.y, ' ', nil, doc.screen.selectionStyle)
+		xyRelative.x++
+	}
+
 	// clear rest of line
-	for ; xy.x < maxx-1; xy.x++ {
-		doc.screen.SetContent(xy.x, xy.y, ' ', nil, doc.screen.defaultStyle)
+	if xyRelative.x < 0 {
+		xyRelative.x = 0
+	}
+	for ; xyRelative.x < maxx-1; xyRelative.x++ {
+		doc.screen.SetContent(xyRelative.x, xyRelative.y, ' ', nil, doc.screen.defaultStyle)
 	}
 }
 
@@ -345,6 +346,73 @@ func (doc *DocStruct) renderScreen() {
 		}
 		doc.renderLine(y)
 	}
+	doc.renderInfoLine()
+}
+
+func (doc *DocStruct) renderInfoLine() {
+	line := fmt.Sprintf("C:%d,%d | Ss:%d,%d | Se:%d,%d",
+		doc.absolutCursor.x, doc.absolutCursor.y,
+		doc.selection.begin.x, doc.selection.begin.y,
+		doc.selection.end.x, doc.selection.end.y,
+	)
+
+	maxx, _ := doc.screen.Size()
+	x := maxx - utf8.RuneCountInString(line) - 1
+	for _, c := range line {
+		var comb []rune
+		w := runewidth.RuneWidth(c)
+		if w == 0 {
+			comb = []rune{c}
+			c = ' '
+			w = 1
+		}
+		doc.screen.SetContent(x, 0, c, comb, doc.screen.infoStyle)
+		x += w
+	}
+}
+
+func (doc *DocStruct) updateSelection(set bool) {
+	initialSelection := selectionStruct{
+		begin: xyStruct{x: -1, y: -1},
+		end:   xyStruct{x: -1, y: -1},
+	}
+	if !set {
+		// reset selection
+		if doc.selection == initialSelection {
+			return
+		}
+		doc.selection = initialSelection
+		doc.renderScreen()
+		return
+	}
+
+	xyAbsolute := xyStruct{
+		x: doc.absolutCursor.x,
+		y: doc.absolutCursor.y,
+	}
+	xyPrevious := xyStruct{
+		x: doc.previousCursor.x,
+		y: doc.previousCursor.y,
+	}
+
+	if doc.selection == initialSelection {
+		doc.selection.begin = xyAbsolute
+		doc.selection.end = xyPrevious
+		doc.selection.orderBeginEnd()
+	} else {
+		if xyAbsolute.greaterOrEqual(doc.selection.end) {
+			doc.selection.end = xyAbsolute
+		} else if xyAbsolute.lessOrEqual(doc.selection.begin) {
+			doc.selection.begin = xyAbsolute
+		} else {
+			if xyPrevious.lessOrEqual(xyAbsolute) {
+				doc.selection.begin = xyAbsolute
+			} else {
+				doc.selection.end = xyAbsolute
+			}
+		}
+	}
+	doc.renderScreen()
 }
 
 func (doc *DocStruct) handleEventCursorDown() {
@@ -394,7 +462,6 @@ func (doc *DocStruct) handleEventCursorRight(event *tcell.EventKey) {
 			doc.absolutCursor.x = 0
 		}
 	}
-
 	doc.absolutCursor.wantX = doc.absolutCursor.x
 	doc.alignCursorX()
 	doc.adjustViewport()
@@ -645,6 +712,7 @@ func (doc *DocStruct) handleEventInsertTab() {
 
 func (doc *DocStruct) handleKeyEventCursor(event *tcell.EventKey) (handled bool) {
 	handled = true
+	savedCursor := doc.absolutCursor
 	if event.Key() == tcell.KeyDown {
 		doc.handleEventCursorDown()
 	} else if event.Key() == tcell.KeyUp {
@@ -664,18 +732,15 @@ func (doc *DocStruct) handleKeyEventCursor(event *tcell.EventKey) (handled bool)
 	} else {
 		handled = false
 	}
+	if handled {
+		doc.previousCursor = savedCursor
+		setSelection := event.Modifiers()&1 != 0
+		doc.updateSelection(setSelection) // false -- remove selection
+	}
 	return
 }
 
 func (doc *DocStruct) handleKeyEvent(event *tcell.EventKey) {
-	doc.screen.renderInfoLine(
-		fmt.Sprintf("C: %3d,%3d | %.3d  %c  %x",
-			doc.absolutCursor.x, doc.absolutCursor.y,
-			event.Key(),
-			event.Rune(),
-			event.Modifiers(),
-		))
-
 	if doc.handleKeyEventCursor(event) {
 		return
 	} else if event.Key() == tcell.KeyRune {
