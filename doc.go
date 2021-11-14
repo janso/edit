@@ -151,6 +151,8 @@ type selectionStruct struct {
 	begin, end xyStruct
 }
 
+var initialSelection selectionStruct
+
 func (sel *selectionStruct) orderBeginEnd() {
 	if sel.end.lessOrEqual(sel.begin) {
 		sel.end, sel.begin = sel.begin, sel.end
@@ -350,8 +352,9 @@ func (doc *DocStruct) renderScreen() {
 }
 
 func (doc *DocStruct) renderInfoLine() {
-	line := fmt.Sprintf("C:%d,%d | Ss:%d,%d | Se:%d,%d",
+	line := fmt.Sprintf("C:%d,%d | P:%d,%d | Ss:%d,%d | Se:%d,%d",
 		doc.absolutCursor.x, doc.absolutCursor.y,
+		doc.previousCursor.x, doc.previousCursor.y,
 		doc.selection.begin.x, doc.selection.begin.y,
 		doc.selection.end.x, doc.selection.end.y,
 	)
@@ -372,10 +375,6 @@ func (doc *DocStruct) renderInfoLine() {
 }
 
 func (doc *DocStruct) updateSelection(set bool) {
-	initialSelection := selectionStruct{
-		begin: xyStruct{x: -1, y: -1},
-		end:   xyStruct{x: -1, y: -1},
-	}
 	if !set {
 		// reset selection
 		if doc.selection == initialSelection {
@@ -385,34 +384,56 @@ func (doc *DocStruct) updateSelection(set bool) {
 		doc.renderScreen()
 		return
 	}
-
-	xyAbsolute := xyStruct{
-		x: doc.absolutCursor.x,
-		y: doc.absolutCursor.y,
-	}
+	/*
+		xyAbsolute := xyStruct{
+			x: doc.absolutCursor.x,
+			y: doc.absolutCursor.y,
+		}
+	*/
 	xyPrevious := xyStruct{
 		x: doc.previousCursor.x,
 		y: doc.previousCursor.y,
 	}
 
 	if doc.selection == initialSelection {
-		doc.selection.begin = xyAbsolute
+		doc.selection.begin = xyPrevious
 		doc.selection.end = xyPrevious
-		doc.selection.orderBeginEnd()
 	} else {
-		if xyAbsolute.greaterOrEqual(doc.selection.end) {
-			doc.selection.end = xyAbsolute
-		} else if xyAbsolute.lessOrEqual(doc.selection.begin) {
-			doc.selection.begin = xyAbsolute
+		if xyPrevious.greaterOrEqual(doc.selection.end) {
+			doc.selection.end = xyPrevious
+		} else if xyPrevious.lessOrEqual(doc.selection.begin) {
+			doc.selection.begin = xyPrevious
 		} else {
-			if xyPrevious.lessOrEqual(xyAbsolute) {
-				doc.selection.begin = xyAbsolute
+			if xyPrevious.lessOrEqual(xyPrevious) {
+				doc.selection.begin = xyPrevious
 			} else {
-				doc.selection.end = xyAbsolute
+				doc.selection.end = xyPrevious
 			}
 		}
 	}
 	doc.renderScreen()
+}
+
+func (doc *DocStruct) deleteSelection(ui *UndoItemStruct) {
+	if doc.selection == initialSelection {
+		return
+	}
+	if doc.selection.begin.y == doc.selection.end.y {
+		// selection in single line
+		y := doc.selection.begin.y
+		leftPartOfLine := doc.text[y][:doc.selection.begin.x]
+		rightPartOfLine := doc.text[y][doc.selection.end.x:]
+		doc.updateLine(ui, y, concatenateLines(leftPartOfLine, rightPartOfLine))
+	}
+
+	doc.absolutCursor.x = doc.selection.begin.x
+	doc.absolutCursor.wantX = doc.absolutCursor.x
+	doc.absolutCursor.y = doc.selection.begin.y
+	doc.alignCursorX()
+
+	doc.selection = initialSelection
+	// doc.updateLine(ui, y, concatenateLines(doc.text[y], doc.text[y+1]))
+	// doc.deleteLine(ui, y+1)
 }
 
 func (doc *DocStruct) handleEventCursorDown() {
@@ -585,6 +606,14 @@ func (doc *DocStruct) handleEventBackspace() {
 
 func (doc *DocStruct) handleEventDelete() {
 	undoItem := newUndoItem()
+
+	if doc.selection != initialSelection {
+		// dek whole selection
+		doc.deleteSelection(&undoItem)
+		doc.undoStack.push(undoItem)
+		doc.renderScreen()
+	}
+
 	x := doc.absolutCursor.x
 	y := doc.absolutCursor.y
 	l := len(doc.text)
@@ -736,6 +765,8 @@ func (doc *DocStruct) handleKeyEventCursor(event *tcell.EventKey) (handled bool)
 		doc.previousCursor = savedCursor
 		setSelection := event.Modifiers()&1 != 0
 		doc.updateSelection(setSelection) // false -- remove selection
+
+		doc.renderInfoLine()
 	}
 	return
 }

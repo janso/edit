@@ -34,6 +34,13 @@ func main() {
 	*/
 	fmt.Println("edit started") // ToDo remove!
 	args := []string{"test.txt"}
+
+	// init globals
+	initialSelection = selectionStruct{
+		begin: xyStruct{x: -1, y: -1},
+		end:   xyStruct{x: -1, y: -1},
+	}
+
 	// init doc object
 	doc := DocStruct{
 		filename:       args[0],
@@ -47,8 +54,8 @@ func main() {
 			top:       0,
 		},
 		selection: selectionStruct{
-			begin: xyStruct{x: 8, y: 4},
-			end:   xyStruct{x: 12, y: 6},
+			begin: xyStruct{x: -1, y: -1},
+			end:   xyStruct{x: -1, y: -1},
 		},
 	}
 
