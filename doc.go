@@ -90,14 +90,37 @@ type xyStruct struct {
 	x, y int
 }
 
-func (xy *xyStruct) lessOrEqual(xy2 xyStruct) bool {
+func (xy *xyStruct) equals(xy2 xyStruct) bool {
+	return xy.x == xy2.x && xy.y == xy2.y
+}
+
+func (xy *xyStruct) less(xy2 xyStruct) bool {
 	if xy.y < xy2.y {
 		return true
 	} else if xy.y > xy2.y {
 		return false
 	} else {
 		// for equal row compare columns
-		if xy.x <= xy2.x {
+		if xy.x < xy2.x {
+			return true
+		} else {
+			return false
+		}
+	}
+}
+
+func (xy *xyStruct) lessOrEqual(xy2 xyStruct) bool {
+	return xy.less(xy2) || xy.equals(xy2)
+}
+
+func (xy *xyStruct) greater(xy2 xyStruct) bool {
+	if xy.y > xy2.y {
+		return true
+	} else if xy.y < xy2.y {
+		return false
+	} else {
+		// for equal row compare columns
+		if xy.x > xy2.x {
 			return true
 		} else {
 			return false
@@ -106,18 +129,7 @@ func (xy *xyStruct) lessOrEqual(xy2 xyStruct) bool {
 }
 
 func (xy *xyStruct) greaterOrEqual(xy2 xyStruct) bool {
-	if xy.y > xy2.y {
-		return true
-	} else if xy.y < xy2.y {
-		return false
-	} else {
-		// for equal row compare columns
-		if xy.x >= xy2.x {
-			return true
-		} else {
-			return false
-		}
-	}
+	return xy.greater(xy2) || xy.equals(xy2)
 }
 
 func (xy xyStruct) in(sel selectionStruct) bool {
@@ -151,7 +163,7 @@ type selectionStruct struct {
 	begin, end xyStruct
 }
 
-var initialSelection selectionStruct
+var emptySelection selectionStruct
 
 func (sel *selectionStruct) orderBeginEnd() {
 	if sel.end.lessOrEqual(sel.begin) {
@@ -244,7 +256,7 @@ func (doc *DocStruct) alignCursorX() {
 	}
 }
 
-func (doc *DocStruct) mustadjustViewport() bool {
+func (doc *DocStruct) mustAdjustViewport() bool {
 	screenMaxX, screenMaxY := doc.screen.Size()
 	if doc.absolutCursor.y-doc.viewport.y >= (screenMaxY - 1) {
 		return true
@@ -377,45 +389,51 @@ func (doc *DocStruct) renderInfoLine() {
 func (doc *DocStruct) updateSelection(set bool) {
 	if !set {
 		// reset selection
-		if doc.selection == initialSelection {
+		if doc.selection == emptySelection {
 			return
 		}
-		doc.selection = initialSelection
-		doc.renderScreen()
+		doc.selection = emptySelection
+
+		if doc.selection.begin.y == doc.selection.end.y {
+			// doc.renderLine(doc.selection.end.y)
+		} else {
+			doc.renderScreen()
+		}
 		return
 	}
-	/*
-		xyAbsolute := xyStruct{
-			x: doc.absolutCursor.x,
-			y: doc.absolutCursor.y,
-		}
-	*/
+	xyAbsolute := xyStruct{
+		x: doc.absolutCursor.x,
+		y: doc.absolutCursor.y,
+	}
+
 	xyPrevious := xyStruct{
 		x: doc.previousCursor.x,
 		y: doc.previousCursor.y,
 	}
+	moveRight := xyAbsolute.greater(xyPrevious)
 
-	if doc.selection == initialSelection {
-		doc.selection.begin = xyPrevious
-		doc.selection.end = xyPrevious
-	} else {
-		if xyPrevious.greaterOrEqual(doc.selection.end) {
-			doc.selection.end = xyPrevious
-		} else if xyPrevious.lessOrEqual(doc.selection.begin) {
-			doc.selection.begin = xyPrevious
-		} else {
-			if xyPrevious.lessOrEqual(xyPrevious) {
-				doc.selection.begin = xyPrevious
-			} else {
-				doc.selection.end = xyPrevious
-			}
+	if doc.selection == emptySelection {
+		if moveRight {
+			xyAbsolute.x--
 		}
+		doc.selection.begin = xyAbsolute
+		doc.selection.end = xyAbsolute
+	} else {
+		if xyAbsolute.greaterOrEqual(doc.selection.end) {
+			xyAbsolute.x--
+			doc.selection.end = xyAbsolute
+		} else {
+			doc.selection.begin = xyAbsolute
+		}
+	}
+	if doc.selection.begin.x-1 == doc.selection.end.x {
+		doc.selection = emptySelection
 	}
 	doc.renderScreen()
 }
 
 func (doc *DocStruct) deleteSelection(ui *UndoItemStruct) {
-	if doc.selection == initialSelection {
+	if doc.selection == emptySelection {
 		return
 	}
 	if doc.selection.begin.y == doc.selection.end.y {
@@ -431,7 +449,7 @@ func (doc *DocStruct) deleteSelection(ui *UndoItemStruct) {
 	doc.absolutCursor.y = doc.selection.begin.y
 	doc.alignCursorX()
 
-	doc.selection = initialSelection
+	doc.selection = emptySelection
 	// doc.updateLine(ui, y, concatenateLines(doc.text[y], doc.text[y+1]))
 	// doc.deleteLine(ui, y+1)
 }
@@ -607,7 +625,7 @@ func (doc *DocStruct) handleEventBackspace() {
 func (doc *DocStruct) handleEventDelete() {
 	undoItem := newUndoItem()
 
-	if doc.selection != initialSelection {
+	if doc.selection != emptySelection {
 		// dek whole selection
 		doc.deleteSelection(&undoItem)
 		doc.undoStack.push(undoItem)
@@ -717,7 +735,7 @@ func (doc *DocStruct) handleEventUndo() {
 			doc.absolutCursor.x = action.cursorX
 			doc.absolutCursor.wantX = action.cursorX
 			doc.absolutCursor.y = action.row
-			if !doc.mustadjustViewport() {
+			if !doc.mustAdjustViewport() {
 				doc.renderLine(action.row)
 			} else {
 				doc.adjustViewport()

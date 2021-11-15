@@ -36,7 +36,7 @@ func main() {
 	args := []string{"test.txt"}
 
 	// init globals
-	initialSelection = selectionStruct{
+	emptySelection = selectionStruct{
 		begin: xyStruct{x: -1, y: -1},
 		end:   xyStruct{x: -1, y: -1},
 	}
